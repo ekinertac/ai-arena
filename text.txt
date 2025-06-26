@@ -1,0 +1,6 @@
+Whisper UI: @mention style (@AI1, @AI2)
+we can give human anmes to the Ai's so user can mention them while whispering
+
+Turn Management:
+  The conversation automatically resume from the last AI who was supposed to speak
+

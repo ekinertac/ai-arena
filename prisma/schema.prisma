@@ -1,0 +1,71 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Conversation session
+model Conversation {
+  id        String             @id @default(cuid())
+  title     String
+  topic     String
+  status    ConversationStatus @default(ACTIVE)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  // AI Participants configuration
+  defenderModel    String
+  defenderProvider String
+  criticModel      String
+  criticProvider   String
+
+  // Conversation type and metadata
+  conversationType ConversationType @default(MIXED)
+
+  // Relations
+  messages Message[]
+
+  @@map("conversations")
+}
+
+// Individual messages in conversations
+model Message {
+  id        String        @id @default(cuid())
+  content   String
+  sender    MessageSender
+  timestamp DateTime      @default(now())
+  isWhisper Boolean       @default(false)
+  targetAI  String? // "River" or "Sage" for whispers
+
+  // Relations
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// Enums
+enum ConversationStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum ConversationType {
+  MIXED // Different models (phi3:3.8b vs qwen3:8b)
+  SAME_MODEL // Same model with different roles
+  COLLABORATIVE // Both AIs collaborate instead of debate
+}
+
+enum MessageSender {
+  USER
+  DEFENDER
+  CRITIC
+}
