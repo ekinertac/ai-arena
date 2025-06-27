@@ -160,11 +160,16 @@ Models load into RAM when used. To free memory:
 
 ## API Integration
 
-AI Arena automatically integrates with Ollama's API. The following endpoints are used:
+AI Arena uses **client-side direct connections** to Ollama for optimal performance:
 
-- `GET /api/ollama/status` - Check server status
-- `POST /api/ollama/pull` - Download models
-- `DELETE /api/ollama/delete` - Remove models
+- **Browser → `localhost:11434`** - Direct connection for Ollama models
+- **Browser → Vercel → Provider APIs** - Server-side proxy for OpenAI/Anthropic models
+
+This hybrid approach ensures:
+
+- ✅ **Ollama models**: Faster responses, no server proxy delays
+- ✅ **Cloud models**: Secure API key handling on server-side
+- ✅ **Deployed apps**: Works with proper CORS configuration
 
 ## Support
 
