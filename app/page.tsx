@@ -1,19 +1,18 @@
 'use client';
 
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
-import { useRouter, useSearchParams } from 'next/navigation';
-import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-
 import { ConversationHeader } from '@/components/conversation-header';
 import { ConversationSidebar } from '@/components/conversation-sidebar';
 import { ConversationStarters } from '@/components/conversation-starters';
 import { DebateFlowIndicator } from '@/components/debate-flow-indicator';
 import { MessageInput } from '@/components/message-input';
 import { MessagesList } from '@/components/messages-list';
-import { useAIDebate } from '@/hooks/use-ai-debate';
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
+import { useHybridAI } from '@/hooks/use-hybrid-ai';
 import { DatabaseAPI, type UIConversation, type UIMessage } from '@/lib/database';
 import { getRandomStarters, type ConversationStarter } from '@/lib/starters';
 import { createConversationSlug } from '@/lib/utils';
+import { useRouter, useSearchParams } from 'next/navigation';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
 // Component that handles search params - needs to be wrapped in Suspense
 function SearchParamsHandler({
@@ -60,7 +59,7 @@ function AIBattleContent({
   const [selectedCategory, setSelectedCategory] = useState('technology');
 
   // AI Debate hook
-  const { generateAIResponse, isGenerating, error: aiError, clearError, cleanup } = useAIDebate();
+  const { generateAIResponse, isGenerating, error: aiError, clearError } = useHybridAI();
 
   // Get current conversation
   const currentConversation = conversations.find((c) => c.id === currentConversationId);
@@ -400,7 +399,7 @@ function AIBattleContent({
 
     try {
       // Stop current generation and preserve the streaming message
-      cleanup();
+      // Note: useHybridAI handles cleanup internally
 
       // Save the current streaming message to database if it exists
       if (streamingMessage.trim() && streamingFrom) {
