@@ -23,7 +23,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   try {
     const { id } = await params;
     const body = await request.json();
-    const { status, title, topic } = body;
+    const { status, title, topic, defenderModel, defenderProvider, criticModel, criticProvider } = body;
 
     if (status) {
       await ConversationDB.updateStatus(id, status);
@@ -31,6 +31,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     if (title !== undefined || topic !== undefined) {
       await ConversationDB.updateTitleAndTopic(id, title || '', topic || '');
+    }
+
+    // Handle model configuration updates
+    const modelUpdates: any = {};
+    if (defenderModel !== undefined) modelUpdates.defenderModel = defenderModel;
+    if (defenderProvider !== undefined) modelUpdates.defenderProvider = defenderProvider;
+    if (criticModel !== undefined) modelUpdates.criticModel = criticModel;
+    if (criticProvider !== undefined) modelUpdates.criticProvider = criticProvider;
+
+    if (Object.keys(modelUpdates).length > 0) {
+      await ConversationDB.updateModelConfig(id, modelUpdates);
     }
 
     const conversation = await ConversationDB.getById(id);

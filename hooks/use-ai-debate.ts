@@ -27,6 +27,7 @@ export function useAIDebate() {
   const [error, setError] = useState<string | null>(null);
   const [ollamaProvider, setOllamaProvider] = useState<ClientOllamaProvider | null>(null);
   const [isOllamaConnected, setIsOllamaConnected] = useState(false);
+  const [currentAbortController, setCurrentAbortController] = useState<AbortController | null>(null);
 
   const generateAIResponse = useCallback(
     async (
@@ -36,6 +37,12 @@ export function useAIDebate() {
       config: DebateConfig,
       onStreamChunk?: (chunk: string) => void,
     ): Promise<string> => {
+      // Cleanup any previous request
+      if (currentAbortController) {
+        console.log('🟡 [AI DEBATE] Cancelling previous request');
+        currentAbortController.abort();
+      }
+
       setIsGenerating(true);
       setError(null);
 
@@ -59,6 +66,9 @@ export function useAIDebate() {
 
         if (useStreaming) {
           // Streaming response
+          const abortController = new AbortController();
+          setCurrentAbortController(abortController);
+
           const response = await fetch('/api/chat', {
             method: 'POST',
             headers: {
@@ -66,6 +76,7 @@ export function useAIDebate() {
               Accept: 'text/event-stream',
             },
             body: JSON.stringify(requestBody),
+            signal: abortController.signal,
           });
 
           if (!response.ok) {
@@ -78,25 +89,41 @@ export function useAIDebate() {
             throw new Error('Failed to get response reader');
           }
 
-          const decoder = new TextDecoder();
           let fullResponse = '';
 
           try {
+            // Add timeout to prevent infinite loops
+            const timeoutId = setTimeout(() => {
+              console.log('🟡 [AI DEBATE] Stream timeout - aborting request');
+              abortController.abort();
+              reader.releaseLock();
+            }, 60000); // 60 second timeout
+
             while (true) {
               const { done, value } = await reader.read();
-              if (done) break;
+              if (done) {
+                clearTimeout(timeoutId);
+                console.log('🟢 [AI DEBATE] Stream completed normally');
+                break;
+              }
 
-              const chunk = decoder.decode(value);
+              const chunk = new TextDecoder().decode(value);
               const lines = chunk.split('\n');
 
               for (const line of lines) {
                 if (line.trim() === '') continue;
-                if (line === 'data: [DONE]') return fullResponse;
+                if (line === 'data: [DONE]') {
+                  clearTimeout(timeoutId);
+                  console.log('🟢 [AI DEBATE] Received [DONE] signal');
+                  return fullResponse;
+                }
                 if (!line.startsWith('data: ')) continue;
 
                 try {
                   const data = JSON.parse(line.slice(6));
                   if (data.error) {
+                    clearTimeout(timeoutId);
+                    console.log('❌ [AI DEBATE] Received error in stream:', data.error);
                     throw new Error(data.error);
                   }
                   if (data.content) {
@@ -104,13 +131,24 @@ export function useAIDebate() {
                     onStreamChunk(data.content);
                   }
                 } catch (e) {
-                  // Skip malformed JSON
+                  // Check if this is a JSON parse error vs a thrown error
+                  if (e instanceof SyntaxError) {
+                    console.log('🟡 [AI DEBATE] Skipping malformed JSON:', line);
+                  } else {
+                    // This is an actual error that was thrown, re-throw it
+                    throw e;
+                  }
                   continue;
                 }
               }
             }
           } finally {
-            reader.releaseLock();
+            // Ensure reader is always released
+            try {
+              reader.releaseLock();
+            } catch (e) {
+              // Reader might already be released
+            }
           }
 
           return fullResponse;
@@ -138,9 +176,10 @@ export function useAIDebate() {
         throw err;
       } finally {
         setIsGenerating(false);
+        setCurrentAbortController(null);
       }
     },
-    [],
+    [currentAbortController],
   );
 
   // Initialize Ollama connection
@@ -154,6 +193,15 @@ export function useAIDebate() {
     return { provider, connected };
   }, []);
 
+  // Cleanup function to abort any ongoing requests
+  const cleanup = useCallback(() => {
+    if (currentAbortController) {
+      console.log('🟡 [AI DEBATE] Aborting ongoing request');
+      currentAbortController.abort();
+      setCurrentAbortController(null);
+    }
+  }, [currentAbortController]);
+
   return {
     generateAIResponse,
     isGenerating,
@@ -162,5 +210,6 @@ export function useAIDebate() {
     initializeOllama,
     isOllamaConnected,
     ollamaProvider,
+    cleanup,
   };
 }

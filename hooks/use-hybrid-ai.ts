@@ -1,5 +1,6 @@
-import type { ChatRequest } from '@/app/api/chat/route';
-import { ClientOllamaProvider } from '@/lib/ai-providers';
+'use client';
+
+import { useOllamaClient } from '@/lib/ollama-client';
 import { useCallback, useState } from 'react';
 
 interface Message {
@@ -22,22 +23,32 @@ interface DebateConfig {
   critic: AIConfig;
 }
 
+interface ChatRequest {
+  messages: Array<{
+    id: string;
+    content: string;
+    sender: string;
+    timestamp: string;
+    isWhisper?: boolean;
+    targetAI?: string;
+  }>;
+  currentTurn: 'defender' | 'critic';
+  topic: string;
+  providers: DebateConfig;
+}
+
 export function useHybridAI() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [ollamaProvider, setOllamaProvider] = useState<ClientOllamaProvider | null>(null);
   const [isOllamaConnected, setIsOllamaConnected] = useState(false);
+  const ollamaClient = useOllamaClient();
 
   // Initialize Ollama connection
   const initializeOllama = useCallback(async () => {
-    const provider = new ClientOllamaProvider();
-    const connected = await provider.checkConnection();
-
-    setOllamaProvider(provider);
+    const connected = await ollamaClient.checkConnection();
     setIsOllamaConnected(connected);
-
-    return { provider, connected };
-  }, []);
+    return { provider: ollamaClient, connected };
+  }, [ollamaClient]);
 
   // Main function that routes to client or server based on provider
   const generateAIResponse = useCallback(
@@ -68,7 +79,7 @@ export function useHybridAI() {
         setIsGenerating(false);
       }
     },
-    [ollamaProvider, isOllamaConnected],
+    [ollamaClient, isOllamaConnected],
   );
 
   // Handle client-side Ollama requests
@@ -79,7 +90,7 @@ export function useHybridAI() {
     providerConfig: AIConfig,
     onStreamChunk?: (chunk: string) => void,
   ): Promise<string> => {
-    if (!ollamaProvider || !isOllamaConnected) {
+    if (!isOllamaConnected) {
       throw new Error('Ollama not connected. Please ensure Ollama is running locally.');
     }
 
@@ -103,18 +114,41 @@ export function useHybridAI() {
       // Streaming response
       let fullResponse = '';
       try {
-        for await (const chunk of ollamaProvider.generateStreamingResponse(fullMessages, providerConfig.model)) {
+        for await (const chunk of ollamaClient.generateStreamingResponse(fullMessages, providerConfig.model)) {
           fullResponse += chunk;
           onStreamChunk(chunk);
         }
       } catch (error) {
-        console.warn('Streaming failed, falling back to non-streaming:', error);
-        fullResponse = await ollamaProvider.generateResponse(fullMessages, providerConfig.model);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+        // Check if this is a CORS error
+        if (errorMessage.includes('CORS blocked')) {
+          throw new Error(`Ollama CORS error: ${errorMessage}`);
+        }
+
+        console.warn('Ollama streaming failed, falling back to non-streaming:', errorMessage);
+        try {
+          fullResponse = await ollamaClient.generateResponse(fullMessages, providerConfig.model);
+        } catch (fallbackError) {
+          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : 'Unknown error';
+          if (fallbackMessage.includes('CORS blocked')) {
+            throw new Error(`Ollama CORS error: ${fallbackMessage}`);
+          }
+          throw fallbackError;
+        }
       }
       return fullResponse;
     } else {
       // Non-streaming response
-      return await ollamaProvider.generateResponse(fullMessages, providerConfig.model);
+      try {
+        return await ollamaClient.generateResponse(fullMessages, providerConfig.model);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        if (errorMessage.includes('CORS blocked')) {
+          throw new Error(`Ollama CORS error: ${errorMessage}`);
+        }
+        throw error;
+      }
     }
   };
 
@@ -226,6 +260,6 @@ export function useHybridAI() {
     clearError: () => setError(null),
     initializeOllama,
     isOllamaConnected,
-    ollamaProvider,
+    ollamaClient,
   };
 }

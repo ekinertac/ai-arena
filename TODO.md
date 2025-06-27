@@ -130,6 +130,23 @@ A platform where two AI models have turn-based discussions about user-provided p
   - [x] `POST /api/conversations/[id]/messages` - Add messages to conversations
   - [x] Next.js 15 compatibility (async params)
 
+- [x] **Frontend Database Integration** ⭐
+
+  - [x] DatabaseAPI client for all CRUD operations
+  - [x] Real-time message persistence during AI conversations
+  - [x] Conversation list loaded from database
+  - [x] Search functionality connected to database
+  - [x] Status management (play/pause) persisted
+  - [x] Error handling for all database operations
+
+- [x] **SEO-Friendly URLs** ⭐
+
+  - [x] Conversation slugs: `/c/universal-basic-income-debate-cmccmle7j`
+  - [x] URL routing with Next.js App Router
+  - [x] Shareable links with copy-to-clipboard functionality
+  - [x] Automatic URL updates when switching conversations
+  - [x] Fallback handling for invalid/missing conversations
+
 - [x] **Django-Style Commands** ⭐
 
   - [x] `npm run makemigrations` - Create migration files
@@ -147,39 +164,61 @@ A platform where two AI models have turn-based discussions about user-provided p
 
 ## 🚧 IN PROGRESS / NEXT PRIORITIES
 
-### Priority 1: Connect Database to UI
+### 🔥 Priority 1: Critical Bug Fixes (URGENT)
 
-- [ ] **Integrate Database with Frontend**
-  - [ ] Connect conversation list sidebar to database
-  - [ ] Load conversations from database on page load
-  - [ ] Save new conversations to database
-  - [ ] Persist messages during AI conversations
-  - [ ] Update conversation status (active/paused/completed)
+- [ ] **Streaming Response Issues**
 
-### Priority 2: Real AI Integration Testing
+  - [ ] Fix "Controller already closed" errors during streaming
+  - [ ] Improve stream abort handling when users click stop
+  - [ ] Add proper stream timeout and cleanup
+  - [ ] Fix AI responses getting cut off mid-stream
 
-- [ ] **Test Current Ollama Integration**
-  - [ ] Verify streaming responses work correctly
-  - [ ] Test conversation flow with multiple models
-  - [ ] Debug any API response formatting issues
-  - [ ] Test whisper functionality with real AI responses
-  - [ ] Validate conversation starters work end-to-end
+- [ ] **AI Response Filtering**
 
-### Priority 3: Enhanced Model Management
+  - [ ] Filter out `<think>` and `</think>` tags from Ollama responses
+  - [ ] Add thinking detection to prevent internal AI reasoning from showing
+  - [ ] Clean up AI response formatting before display
 
-- [ ] **Ollama Model Management UI**
-  - [ ] Local model status indicators (downloaded/available/running)
-  - [ ] Model download progress bars and size information
-  - [ ] Server connection status indicator in sidebar
-  - [ ] Quick setup guide for Ollama installation
-  - [ ] Model performance recommendations based on system specs
-  - [ ] **Endpoints needed:**
-    - [ ] `/api/ollama/status` - Check server connection and health
-    - [ ] `/api/ollama/models` - List available/installed models
-    - [ ] `/api/ollama/pull` - Download/pull new models
-    - [ ] `/api/ollama/delete` - Remove installed models
+- [ ] **React Fast Refresh Errors**
+  - [ ] Fix runtime errors causing full page reloads
+  - [ ] Investigate component state management issues
+  - [ ] Ensure proper cleanup in useEffect hooks
 
-### Priority 4: Production-Ready API Keys
+### ✅ Priority 2: Real AI Integration Testing (COMPLETE)
+
+- [x] **Test Current Ollama Integration**
+  - [x] Verify streaming responses work correctly
+  - [x] Test conversation flow with multiple models
+  - [x] Debug any API response formatting issues
+  - [x] Test whisper functionality with real AI responses
+  - [x] Validate conversation starters work end-to-end
+  - [x] Fix API validation and error handling
+
+### ✅ Priority 3: Enhanced Model Management (COMPLETE)
+
+- [x] **Ollama Model Management UI**
+  - [x] Local model status indicators (downloaded/available/running)
+  - [x] Model download progress bars and size information
+  - [x] Server connection status indicator in sidebar
+  - [x] Quick setup guide for Ollama installation
+  - [x] Model performance recommendations based on system specs
+  - [x] **Endpoints needed:**
+    - [x] `/api/ollama/status` - Check server connection and health
+    - [x] `/api/ollama/models` - List available/installed models
+    - [x] `/api/ollama/pull` - Download/pull new models
+    - [x] `/api/ollama/delete` - Remove installed models
+
+### ✅ Priority 4: Manual AI Control System (COMPLETE)
+
+- [x] **Manual AI Response Triggers**
+  - [x] Disabled automatic 2-second AI response delays
+  - [x] Added manual "Play" buttons for each AI (River/Sage)
+  - [x] Smart conversation flow - when user responds, the OTHER AI is suggested
+  - [x] Visual indicators showing which AI should respond to user's message
+  - [x] Allow users to choose any AI to respond at any time
+  - [x] Better reading pace - users control conversation flow completely
+
+### Priority 5: Production-Ready API Keys (NEXT)
 
 - [ ] **API Key Configuration UI**
   - [ ] Settings panel for API keys (OpenAI, Anthropic)
@@ -257,20 +296,24 @@ A platform where two AI models have turn-based discussions about user-provided p
 - **Multiple Types**: Mixed, same-model, and collaborative conversations
 - **Whisper System**: Private @mentions to specific AIs
 - **Database Persistence**: SQLite with Prisma ORM, full CRUD operations
+- **Real-time Persistence**: All messages and conversations saved automatically
+- **SEO-Friendly URLs**: Shareable conversation links with readable slugs
 - **Django-Style Commands**: makemigrations, migrate, showmigrations, dbshell, help
 - **Testing Infrastructure**: Complete database test suite
 
 ### 🔧 Immediate Next Steps:
 
-1. **Connect database to UI** - Wire up the frontend to use database persistence
-2. **Test real AI conversations** - Verify Ollama responses work with database
-3. **Add model management** - Show available models, download status
+1. **Fix streaming bugs** - Resolve "Controller already closed" errors and response cutoffs
+2. **Filter AI thinking** - Remove `<think>` tags from Ollama model responses
+3. **Fix React errors** - Eliminate Fast Refresh runtime errors for smoother development
 4. **Production API keys** - Enable OpenAI/Anthropic for users without Ollama
+5. **Conversation completion** - Detect when debates reach resolution
 
 ### 🎯 Current Architecture:
 
 - **Frontend**: Next.js 15 with React, Tailwind CSS, Framer Motion
 - **Database**: SQLite with Prisma ORM (PostgreSQL migration ready)
+- **URLs**: SEO-friendly conversation slugs with Next.js App Router
 - **AI Providers**: OpenAI, Anthropic, Ollama with unified interface
 - **Local Models**: phi3:3.8b, qwen3:8b, deepseek-r1, phi4
 - **State Management**: React hooks with database persistence
@@ -278,7 +321,18 @@ A platform where two AI models have turn-based discussions about user-provided p
 
 ## 🔍 Recent Achievements:
 
+- ✅ **Manual AI Control**: Disabled automatic responses, added manual trigger buttons with natural conversation flow
+- ✅ **Clean URL Structure**: Fixed URLs from `/?c=id` to `/c/conversation-slug-id` format
+- ✅ **Component Architecture**: Refactored 1000+ line main page into 6 clean components
+- ✅ **Model Selector**: Always visible in header center, no longer hidden
+- ✅ **Simplified Stop System**: Single stop button + natural resume by typing
+- ✅ **Stable UI**: Fixed random conversation starters re-rendering issue
+- ✅ **Better UX**: Preserved partial AI responses when stopping generation
 - ✅ **Database Integration**: Complete SQLite setup with Prisma ORM
+- ✅ **Frontend Integration**: Real-time persistence of all conversations and messages
+- ✅ **SEO-Friendly URLs**: Conversation slugs like `/c/ai-regulation-debate-cmccmle7j`
+- ✅ **Share Functionality**: Copy-to-clipboard for conversation links
+- ✅ **URL Routing**: Automatic URL updates when switching conversations
 - ✅ **Django Commands**: Familiar makemigrations/migrate workflow
 - ✅ **Testing Suite**: All 7 database operations tested and passing
 - ✅ **Next.js 15**: Fixed async params compatibility

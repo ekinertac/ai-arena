@@ -38,6 +38,9 @@ function buildConversationHistory(
 ): AIMessage[] {
   const conversationHistory: AIMessage[] = [];
 
+  // Limit to last 6 messages to prevent repetition and reduce context size
+  const recentMessages = messages.slice(-6);
+
   // Add system prompt for current AI
   const systemPrompt =
     currentRole === 'defender'
@@ -52,9 +55,23 @@ function buildConversationHistory(
           personality: undefined,
         });
 
+  // Add turn context to help prevent repetition
+  const turnCount = Math.floor(messages.length / 2) + 1;
+  const contextualPrompt = `${systemPrompt}
+
+## Current Context:
+- This is turn ${turnCount} of the debate
+- You are responding as ${currentRole === 'defender' ? 'River (The Defender)' : 'Sage (The Critic)'}
+- Focus on NEW points - avoid repeating previous arguments
+- Build upon the conversation so far with fresh perspectives
+
+${
+  recentMessages.length > 0 ? `Recent conversation has covered: ${recentMessages.map((m) => m.sender).join(' → ')}` : ''
+}`;
+
   conversationHistory.push({
     role: 'system',
-    content: systemPrompt,
+    content: contextualPrompt,
   });
 
   // Add the initial topic as the first user message
@@ -64,7 +81,7 @@ function buildConversationHistory(
   });
 
   // Add conversation history, filtering out whispers not meant for this AI
-  for (const message of messages) {
+  for (const message of recentMessages) {
     // Skip whispers not meant for this AI
     if (message.isWhisper && message.targetAI !== (currentRole === 'defender' ? 'River' : 'Sage')) {
       continue;
@@ -98,8 +115,34 @@ export async function POST(request: NextRequest) {
     const body: ChatRequest = await request.json();
     const { messages, currentTurn, topic, providers } = body;
 
+    console.log('🔵 [CHAT API] Starting chat request for turn:', currentTurn);
+    console.log('🔵 [CHAT API] Topic:', topic);
+    console.log('🔵 [CHAT API] Messages count:', messages.length);
+
+    // Validate required fields
+    if (!currentTurn || !providers || !providers.defender || !providers.critic) {
+      console.log('❌ [CHAT API] Missing required fields');
+      return NextResponse.json(
+        { error: 'Missing required fields: currentTurn, providers.defender, or providers.critic' },
+        { status: 400 },
+      );
+    }
+
+    // Validate currentTurn is valid
+    if (currentTurn !== 'defender' && currentTurn !== 'critic') {
+      console.log('❌ [CHAT API] Invalid currentTurn:', currentTurn);
+      return NextResponse.json({ error: 'Invalid currentTurn. Must be "defender" or "critic"' }, { status: 400 });
+    }
+
     // Get API key from environment or request (Ollama doesn't need one)
     const currentProvider = providers[currentTurn];
+    if (!currentProvider) {
+      console.log('❌ [CHAT API] Provider configuration not found for:', currentTurn);
+      return NextResponse.json({ error: `Provider configuration not found for ${currentTurn}` }, { status: 400 });
+    }
+
+    console.log('🔵 [CHAT API] Using provider:', currentProvider.provider, 'model:', currentProvider.model);
+
     let apiKey = '';
 
     if (currentProvider.provider !== 'ollama') {
@@ -112,6 +155,7 @@ export async function POST(request: NextRequest) {
           : '');
 
       if (!apiKey) {
+        console.log('❌ [CHAT API] API key not found for provider:', currentProvider.provider);
         return NextResponse.json({ error: `API key not found for ${currentProvider.provider}` }, { status: 400 });
       }
     }
@@ -119,14 +163,17 @@ export async function POST(request: NextRequest) {
     // Create provider instance
     const provider = createProvider(currentProvider.provider, apiKey);
     if (!provider) {
+      console.log('❌ [CHAT API] Unknown provider:', currentProvider.provider);
       return NextResponse.json({ error: `Unknown provider: ${currentProvider.provider}` }, { status: 400 });
     }
 
     // Build conversation history for current AI
     const conversationHistory = buildConversationHistory(messages, currentTurn, topic);
+    console.log('🔵 [CHAT API] Built conversation history with', conversationHistory.length, 'messages');
 
     // Check if we want streaming response
     const isStreaming = request.headers.get('accept') === 'text/event-stream';
+    console.log('🔵 [CHAT API] Streaming mode:', isStreaming);
 
     if (isStreaming) {
       // Set up streaming response
@@ -134,24 +181,59 @@ export async function POST(request: NextRequest) {
       const stream = new ReadableStream({
         async start(controller) {
           try {
+            console.log('🟡 [CHAT API] Starting AI stream generation...');
             const responseGenerator = provider.generateStreamingResponse(conversationHistory, currentProvider.model, {
-              temperature: 0.7,
-              maxTokens: 1000,
+              temperature: 0.9,
             });
 
+            let chunkCount = 0;
+            let totalContent = '';
             for await (const chunk of responseGenerator) {
-              const data = `data: ${JSON.stringify({ content: chunk })}\n\n`;
-              controller.enqueue(encoder.encode(data));
+              chunkCount++;
+              totalContent += chunk;
+              console.log(`🟢 [CHAT API] Chunk ${chunkCount}: "${chunk}" (length: ${chunk.length})`);
+
+              // Check if the client is still connected
+              if (controller.desiredSize === null) {
+                console.log('🟡 [CHAT API] Client disconnected, closing stream.');
+                return;
+              }
+
+              try {
+                const data = `data: ${JSON.stringify({ content: chunk })}\n\n`;
+                controller.enqueue(encoder.encode(data));
+              } catch (e) {
+                console.log('🟡 [CHAT API] Controller already closed, could not enqueue chunk.');
+                // The controller is already closed, so we can't send more data.
+                // We can just break the loop.
+                break;
+              }
             }
 
-            // Send completion signal
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
+            console.log('🟢 [CHAT API] Stream completed. Total chunks:', chunkCount);
+            console.log('🟢 [CHAT API] Full response:', totalContent);
+            console.log('🟢 [CHAT API] Full response length:', totalContent.length);
+
+            // Send completion signal and close controller
+            try {
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              console.log('🟢 [CHAT API] Sent [DONE] signal');
+              controller.close();
+              console.log('🟢 [CHAT API] Controller closed successfully');
+            } catch (e) {
+              console.log('🟡 [CHAT API] Controller already closed, could not send [DONE].');
+            }
           } catch (error) {
+            console.log('❌ [CHAT API] Stream error:', error);
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            const errorData = `data: ${JSON.stringify({ error: errorMessage })}\n\n`;
-            controller.enqueue(encoder.encode(errorData));
-            controller.close();
+            try {
+              const errorData = `data: ${JSON.stringify({ error: errorMessage })}\n\n`;
+              controller.enqueue(encoder.encode(errorData));
+              controller.close();
+              console.log('🟢 [CHAT API] Error sent and controller closed');
+            } catch (e) {
+              console.log('🟡 [CHAT API] Controller already closed, could not send error.');
+            }
           }
         },
       });
@@ -165,15 +247,18 @@ export async function POST(request: NextRequest) {
       });
     } else {
       // Non-streaming response
+      console.log('🟡 [CHAT API] Starting AI non-streaming generation...');
       const response = await provider.generateResponse(conversationHistory, currentProvider.model, {
-        temperature: 0.7,
-        maxTokens: 1000,
+        temperature: 0.9,
       });
+
+      console.log('🟢 [CHAT API] Non-streaming response:', response);
+      console.log('🟢 [CHAT API] Response length:', response.length);
 
       return NextResponse.json({ content: response });
     }
   } catch (error) {
-    console.error('Chat API error:', error);
+    console.error('❌ [CHAT API] Fatal error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }

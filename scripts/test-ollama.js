@@ -5,7 +5,7 @@
  * Tests: Connection, API endpoint, streaming, conversation flow, whisper system
  */
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = 'http://localhost:3003';
 const OLLAMA_URL = 'http://localhost:11434';
 
 async function testOllamaConnection() {
@@ -48,9 +48,26 @@ async function testAPIEndpoint(models) {
 
   const testModel = models[0].name;
   const testPayload = {
-    messages: [{ role: 'user', content: 'Say "Hello from AI Arena test!" and nothing else.' }],
-    model: testModel,
-    stream: false,
+    messages: [
+      {
+        id: '1',
+        content: 'Say "Hello from AI Arena test!" and nothing else.',
+        sender: 'user',
+        timestamp: new Date().toISOString(),
+      },
+    ],
+    currentTurn: 'defender',
+    topic: 'Test conversation',
+    providers: {
+      defender: {
+        provider: 'ollama',
+        model: testModel,
+      },
+      critic: {
+        provider: 'ollama',
+        model: testModel,
+      },
+    },
   };
 
   try {
@@ -93,9 +110,26 @@ async function testStreamingResponse(models) {
 
   const testModel = models[0].name;
   const testPayload = {
-    messages: [{ role: 'user', content: 'Count from 1 to 5, each number on a new line.' }],
-    model: testModel,
-    stream: true,
+    messages: [
+      {
+        id: '1',
+        content: 'Count from 1 to 5, each number on a new line.',
+        sender: 'user',
+        timestamp: new Date().toISOString(),
+      },
+    ],
+    currentTurn: 'defender',
+    topic: 'Test streaming',
+    providers: {
+      defender: {
+        provider: 'ollama',
+        model: testModel,
+      },
+      critic: {
+        provider: 'ollama',
+        model: testModel,
+      },
+    },
   };
 
   try {
@@ -103,6 +137,7 @@ async function testStreamingResponse(models) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
       },
       body: JSON.stringify(testPayload),
     });
@@ -176,9 +211,26 @@ async function testConversationFlow(models) {
     // Test Defender AI (River)
     console.log('  Testing Defender AI (River)...');
     const defenderPayload = {
-      messages: [{ role: 'user', content: 'Argue in favor of renewable energy. Keep it brief.' }],
-      model: defenderModel,
-      stream: false,
+      messages: [
+        {
+          id: '1',
+          content: 'Argue in favor of renewable energy. Keep it brief.',
+          sender: 'user',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      currentTurn: 'defender',
+      topic: 'Renewable energy debate',
+      providers: {
+        defender: {
+          provider: 'ollama',
+          model: defenderModel,
+        },
+        critic: {
+          provider: 'ollama',
+          model: criticModel,
+        },
+      },
     };
 
     const defenderResponse = await fetch(`${BASE_URL}/api/chat`, {
@@ -199,9 +251,32 @@ async function testConversationFlow(models) {
     // Test Critic AI (Sage)
     console.log('  Testing Critic AI (Sage)...');
     const criticPayload = {
-      messages: [{ role: 'user', content: 'Challenge the benefits of renewable energy. Keep it brief.' }],
-      model: criticModel,
-      stream: false,
+      messages: [
+        {
+          id: '1',
+          content: 'Argue in favor of renewable energy. Keep it brief.',
+          sender: 'user',
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: '2',
+          content: defenderData.content,
+          sender: 'defender',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+      currentTurn: 'critic',
+      topic: 'Renewable energy debate',
+      providers: {
+        defender: {
+          provider: 'ollama',
+          model: defenderModel,
+        },
+        critic: {
+          provider: 'ollama',
+          model: criticModel,
+        },
+      },
     };
 
     const criticResponse = await fetch(`${BASE_URL}/api/chat`, {
@@ -243,11 +318,28 @@ async function testWhisperFunctionality(models) {
   try {
     // Test whisper detection and processing
     const whisperPayload = {
-      messages: [{ role: 'user', content: '@Sage Please respond to this whisper message briefly.' }],
-      model: testModel,
-      stream: false,
-      isWhisper: true,
-      targetAI: 'Sage',
+      messages: [
+        {
+          id: '1',
+          content: '@Sage Please respond to this whisper message briefly.',
+          sender: 'user',
+          timestamp: new Date().toISOString(),
+          isWhisper: true,
+          targetAI: 'Sage',
+        },
+      ],
+      currentTurn: 'critic',
+      topic: 'Whisper test',
+      providers: {
+        defender: {
+          provider: 'ollama',
+          model: testModel,
+        },
+        critic: {
+          provider: 'ollama',
+          model: testModel,
+        },
+      },
     };
 
     const response = await fetch(`${BASE_URL}/api/chat`, {

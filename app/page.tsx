@@ -1,717 +1,528 @@
 'use client';
 
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
-  SidebarInset,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarTrigger,
-} from '@/components/ui/sidebar';
-import { motion } from 'framer-motion';
-import { MessageSquare, Pause, Play, Plus, Search, Send, Shield, Swords, Trash2, User, Zap } from 'lucide-react';
-import React, { useEffect, useRef, useState } from 'react';
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
+import { useRouter, useSearchParams } from 'next/navigation';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
+import { ConversationHeader } from '@/components/conversation-header';
+import { ConversationSidebar } from '@/components/conversation-sidebar';
+import { ConversationStarters } from '@/components/conversation-starters';
+import { DebateFlowIndicator } from '@/components/debate-flow-indicator';
+import { MessageInput } from '@/components/message-input';
+import { MessagesList } from '@/components/messages-list';
 import { useAIDebate } from '@/hooks/use-ai-debate';
-import { conversationStarters, getRandomStarters, type ConversationStarter } from '@/lib/starters';
+import { DatabaseAPI, type UIConversation, type UIMessage } from '@/lib/database';
+import { getRandomStarters, type ConversationStarter } from '@/lib/starters';
+import { createConversationSlug } from '@/lib/utils';
 
-interface ConversationSession {
-  id: string;
-  title: string;
-  topic: string;
-  status: 'active' | 'paused' | 'completed';
-  messages: Message[];
-  createdAt: Date;
-  participantA: AIParticipant;
-  participantB: AIParticipant;
+// Component that handles search params - needs to be wrapped in Suspense
+function SearchParamsHandler({
+  onConversationChange,
+}: {
+  onConversationChange: (conversationId: string | null) => void;
+}) {
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const conversationId = searchParams.get('c');
+    onConversationChange(conversationId);
+  }, [searchParams, onConversationChange]);
+
+  return null;
 }
 
-interface AIParticipant {
-  name: string;
-  model: string;
-  provider: string;
-  role: 'defender' | 'critic' | 'supporter' | 'challenger' | 'collaborator';
-  personality?: string;
-}
+function AIBattleContent({
+  currentConversationId,
+  setCurrentConversationId,
+}: {
+  currentConversationId: string | null;
+  setCurrentConversationId: React.Dispatch<React.SetStateAction<string | null>>;
+}) {
+  const [conversations, setConversations] = useState<UIConversation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-interface Message {
-  id: string;
-  content: string;
-  sender: 'user' | 'defender' | 'critic';
-  timestamp: Date;
-  isWhisper?: boolean;
-  targetAI?: string;
-}
+  // Router for URL management
+  const router = useRouter();
 
-export default function AIBattle() {
-  const [sessions, setSessions] = useState<ConversationSession[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-
-  // Always dark mode - no light mode needed
+  // UI state
   const [searchQuery, setSearchQuery] = useState('');
-  const [isDebateActive, setIsDebateActive] = useState(false);
-  const [, setCurrentTurn] = useState<'defender' | 'critic'>('defender');
+  const [debateFlow, setDebateFlow] = useState<'critic-first' | 'defender-first'>('critic-first');
+  const [nextAIRole, setNextAIRole] = useState<'defender' | 'critic' | null>(null);
   const [input, setInput] = useState('');
 
   const [streamingMessage, setStreamingMessage] = useState('');
   const [streamingFrom, setStreamingFrom] = useState<'defender' | 'critic' | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const debateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Conversation starters state
   const [selectedCategory, setSelectedCategory] = useState('technology');
 
   // AI Debate hook
-  const { generateAIResponse, isGenerating, error, clearError } = useAIDebate();
+  const { generateAIResponse, isGenerating, error: aiError, clearError, cleanup } = useAIDebate();
 
-  // Get current session
-  const currentSession = sessions.find((s) => s.id === currentSessionId);
+  // Get current conversation
+  const currentConversation = conversations.find((c) => c.id === currentConversationId);
+
+  // Memoize random starters so they don't change on every render
+  const randomStarters = useMemo(() => getRandomStarters(3), []);
+
+  // Load conversations from database on mount
+  useEffect(() => {
+    loadConversations();
+  }, []);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentSession?.messages]);
+  }, [currentConversation?.messages]);
 
-  const createNewConversation = (type: 'mixed' | 'same' | 'collab') => {
-    let participantA, participantB, title;
-
-    switch (type) {
-      case 'same':
-        participantA = { name: 'River', model: 'deepseek-r1:latest', provider: 'ollama', role: 'supporter' as const };
-        participantB = { name: 'Sage', model: 'deepseek-r1:latest', provider: 'ollama', role: 'challenger' as const };
-        title = 'Same Model Discussion';
-        break;
-      case 'collab':
-        participantA = { name: 'River', model: 'phi4:latest', provider: 'ollama', role: 'collaborator' as const };
-        participantB = { name: 'Sage', model: 'qwen3:8b', provider: 'ollama', role: 'collaborator' as const };
-        title = 'Collaborative Session';
-        break;
-      default: // mixed
-        participantA = { name: 'River', model: 'phi3:3.8b', provider: 'ollama', role: 'defender' as const };
-        participantB = { name: 'Sage', model: 'qwen3:8b', provider: 'ollama', role: 'critic' as const };
-        title = 'New Conversation';
-        break;
-    }
-
-    const newSession: ConversationSession = {
-      id: Date.now().toString(),
-      title,
-      topic: '',
-      status: 'active',
-      messages: [],
-      createdAt: new Date(),
-      participantA,
-      participantB,
-    };
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newSession.id);
-    setIsDebateActive(false);
-    setCurrentTurn('defender');
-  };
-
-  const selectSession = (sessionId: string) => {
-    const session = sessions.find((s) => s.id === sessionId);
-    if (session) {
-      setCurrentSessionId(sessionId);
-      setIsDebateActive(session.status === 'active');
-    }
-  };
-
-  const deleteSession = (sessionId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-    if (currentSessionId === sessionId) {
-      const remainingSessions = sessions.filter((s) => s.id !== sessionId);
-      if (remainingSessions.length > 0) {
-        selectSession(remainingSessions[0].id);
-      } else {
-        setCurrentSessionId(null);
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (debateTimeoutRef.current) {
+        clearTimeout(debateTimeoutRef.current);
       }
-    }
-  };
-
-  const updateSessionTitle = (sessionId: string, topic: string) => {
-    const title = topic.slice(0, 40) + (topic.length > 40 ? '...' : '');
-    setSessions((prev) =>
-      prev.map((session) =>
-        session.id === sessionId && session.title === 'New Conversation' ? { ...session, title, topic } : session,
-      ),
-    );
-  };
-
-  const toggleDebate = () => {
-    if (currentSession) {
-      const newStatus = isDebateActive ? 'paused' : 'active';
-      setIsDebateActive(!isDebateActive);
-      setSessions((prev) =>
-        prev.map((session) => (session.id === currentSessionId ? { ...session, status: newStatus } : session)),
-      );
-    }
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || !currentSessionId) return;
-
-    // Create new conversation if this is the first message
-    if (!currentSession && input.trim()) {
-      createNewConversation('mixed');
-    }
-
-    // Update session title if this is the first message
-    if (currentSession?.title === 'New Conversation') {
-      updateSessionTitle(currentSessionId!, input);
-    }
-
-    // Check if it's a whisper (@mention)
-    const whisperMatch = input.match(/^@(River|Sage)\s+(.+)/);
-    const isWhisper = !!whisperMatch;
-    const targetAI = whisperMatch?.[1];
-    const content = isWhisper ? whisperMatch![2] : input;
-
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      content,
-      sender: 'user',
-      timestamp: new Date(),
-      isWhisper,
-      targetAI,
     };
+  }, []);
 
-    // Add message to current session
-    if (currentSession) {
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === currentSessionId ? { ...session, messages: [...session.messages, newMessage] } : session,
-        ),
-      );
+  const loadConversations = async (search?: string) => {
+    try {
+      setLoading(true);
+      setError(null);
+      const fetchedConversations = await DatabaseAPI.getConversations(search);
+      setConversations(fetchedConversations);
+    } catch (err) {
+      console.error('Error loading conversations:', err);
+      setError('Failed to load conversations');
+    } finally {
+      setLoading(false);
     }
+  };
 
+  const createNewConversation = async (type: 'mixed' | 'same' | 'collab') => {
+    try {
+      let defenderModel, defenderProvider, criticModel, criticProvider, conversationType, title;
+
+      switch (type) {
+        case 'same':
+          defenderModel = 'deepseek-r1:latest';
+          defenderProvider = 'ollama';
+          criticModel = 'deepseek-r1:latest';
+          criticProvider = 'ollama';
+          conversationType = 'SAME_MODEL' as const;
+          title = 'Same Model Discussion';
+          break;
+        case 'collab':
+          defenderModel = 'phi4:latest';
+          defenderProvider = 'ollama';
+          criticModel = 'qwen3:8b';
+          criticProvider = 'ollama';
+          conversationType = 'COLLABORATIVE' as const;
+          title = 'Collaborative Session';
+          break;
+        default: // mixed
+          defenderModel = 'phi3:3.8b';
+          defenderProvider = 'ollama';
+          criticModel = 'qwen3:8b';
+          criticProvider = 'ollama';
+          conversationType = 'MIXED' as const;
+          title = 'New Conversation';
+          break;
+      }
+
+      const newConversation = await DatabaseAPI.createConversation({
+        title,
+        topic: '',
+        defenderModel,
+        defenderProvider,
+        criticModel,
+        criticProvider,
+        conversationType,
+      });
+
+      setConversations((prev) => [newConversation, ...prev]);
+      setCurrentConversationId(newConversation.id);
+
+      // Update URL to the new conversation using SEO-friendly slug
+      const slug = createConversationSlug(newConversation.title, newConversation.id);
+      router.push(`/c/${slug}`, { scroll: false });
+    } catch (err) {
+      console.error('Error creating conversation:', err);
+      setError('Failed to create conversation');
+    }
+  };
+
+  const selectConversation = (conversationId: string) => {
+    const conversation = conversations.find((c) => c.id === conversationId);
+    if (conversation) {
+      setCurrentConversationId(conversationId);
+
+      // Update URL to reflect the selected conversation using SEO-friendly slug
+      const slug = createConversationSlug(conversation.title, conversation.id);
+      router.push(`/c/${slug}`, { scroll: false });
+    }
+  };
+
+  const deleteConversation = async (conversationId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await DatabaseAPI.deleteConversation(conversationId);
+      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+
+      // If we deleted the current conversation, clear selection
+      if (currentConversationId === conversationId) {
+        setCurrentConversationId(null);
+        router.push('/', { scroll: false });
+      }
+    } catch (err) {
+      console.error('Error deleting conversation:', err);
+      setError('Failed to delete conversation');
+    }
+  };
+
+  const updateConversationTitle = async (conversationId: string, topic: string) => {
+    try {
+      const updatedConversation = await DatabaseAPI.updateConversation(conversationId, {
+        title: topic.substring(0, 100) + (topic.length > 100 ? '...' : ''),
+        topic,
+      });
+
+      setConversations((prev) =>
+        prev.map((conversation) => (conversation.id === conversationId ? updatedConversation : conversation)),
+      );
+    } catch (err) {
+      console.error('Error updating conversation title:', err);
+    }
+  };
+
+  const addMessageToDatabase = async (conversationId: string, message: Omit<UIMessage, 'id' | 'timestamp'>) => {
+    try {
+      const addedMessage = await DatabaseAPI.addMessage(conversationId, message);
+
+      // Fetch updated conversation to get all messages
+      const updatedConversation = await DatabaseAPI.getConversation(conversationId);
+      if (updatedConversation) {
+        setConversations((prev) =>
+          prev.map((conversation) => (conversation.id === conversationId ? updatedConversation : conversation)),
+        );
+      }
+
+      return addedMessage;
+    } catch (err) {
+      console.error('Error adding message to database:', err);
+      throw err;
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isGenerating) return;
+
+    const topic = input.trim();
     setInput('');
 
-    // Start debate if not already active
-    if (!isDebateActive) {
-      setIsDebateActive(true);
-      // Trigger AI response if this is the topic introduction
-      if (currentSession?.messages.length === 0) {
-        // Defender always goes first
-        setTimeout(() => generateAIDebateResponse('defender'), 1000);
+    try {
+      let conversation = currentConversation;
+
+      // Create new conversation if none exists
+      if (!conversation) {
+        conversation = await DatabaseAPI.createConversation({
+          title: topic.substring(0, 100) + (topic.length > 100 ? '...' : ''),
+          topic,
+          defenderModel: 'phi3:3.8b',
+          defenderProvider: 'ollama',
+          criticModel: 'qwen3:8b',
+          criticProvider: 'ollama',
+          conversationType: 'MIXED',
+        });
+
+        setConversations((prev) => [conversation!, ...prev]);
+        setCurrentConversationId(conversation.id);
+
+        // Update URL
+        const slug = createConversationSlug(conversation.title, conversation.id);
+        router.push(`/c/${slug}`, { scroll: false });
+      } else {
+        // Update conversation title if it's the first message
+        if (conversation.messages.length === 0) {
+          await updateConversationTitle(conversation.id, topic);
+        }
       }
+
+      // Add user message
+      await addMessageToDatabase(conversation.id, {
+        sender: 'user',
+        content: topic,
+        isWhisper: false,
+        targetAI: undefined,
+      });
+
+      // Determine which AI should respond based on natural conversation flow
+      let nextRole: 'defender' | 'critic';
+
+      // Get fresh conversation data to determine next responder
+      const freshConversation = await DatabaseAPI.getConversation(conversation.id);
+      if (!freshConversation) {
+        throw new Error('Conversation not found');
+      }
+
+      // Filter all messages to find the last AI message
+      const allMessages = freshConversation.messages.filter((msg) => msg.sender !== 'user');
+
+      if (allMessages.length === 0) {
+        // No AI messages yet, start with the configured debate flow
+        nextRole = debateFlow === 'critic-first' ? 'critic' : 'defender';
+        console.log('🟢 [SUBMIT] First AI response, using debate flow:', nextRole);
+      } else {
+        // User is responding to the last AI message, so the OTHER AI should respond
+        const lastAIMessage = allMessages[allMessages.length - 1];
+        nextRole = lastAIMessage.sender === 'defender' ? 'critic' : 'defender';
+        console.log('🟢 [SUBMIT] User responded to:', lastAIMessage.sender, '→ Next AI:', nextRole);
+      }
+
+      // Set the next AI role but don't auto-generate - let user control the flow
+      setNextAIRole(nextRole);
+      console.log('🎯 [SUBMIT] Ready for manual trigger:', nextRole);
+    } catch (err) {
+      console.error('Error in handleSubmit:', err);
+      setError('Failed to start conversation');
     }
   };
 
-  // Generate AI response for debate
   const generateAIDebateResponse = async (aiRole: 'defender' | 'critic') => {
-    if (!currentSession || isGenerating) return;
+    if (!currentConversation || isGenerating) return;
 
     try {
+      clearError();
       setStreamingFrom(aiRole);
       setStreamingMessage('');
+
+      const currentMessages = currentConversation.messages || [];
+
+      // Get fresh conversation data to ensure we have the latest topic
+      const freshConversation = await DatabaseAPI.getConversation(currentConversation.id);
+      if (!freshConversation) {
+        throw new Error('Conversation not found');
+      }
+
+      // Use the actual conversation topic, or if empty, use the first user message as the topic
+      const actualTopic =
+        freshConversation.topic ||
+        (freshConversation.messages.length > 0 && freshConversation.messages[0].sender === 'user'
+          ? freshConversation.messages[0].content
+          : 'General Discussion');
 
       // Build the debate config for the API
       const debateConfig = {
         defender: {
-          provider: currentSession.participantA.provider,
-          model: currentSession.participantA.model,
+          provider: freshConversation.defenderProvider,
+          model: freshConversation.defenderModel,
         },
         critic: {
-          provider: currentSession.participantB.provider,
-          model: currentSession.participantB.model,
+          provider: freshConversation.criticProvider,
+          model: freshConversation.criticModel,
         },
       };
 
       // Use the AI debate hook to generate response with streaming
-      const response = await generateAIResponse(
-        currentSession.messages,
-        aiRole,
-        currentSession.topic || 'General Discussion',
-        debateConfig,
-        (chunk: string) => {
-          setStreamingMessage((prev) => prev + chunk);
-        },
-      );
+      const response = await generateAIResponse(currentMessages, aiRole, actualTopic, debateConfig, (chunk: string) => {
+        setStreamingMessage((prev) => prev + chunk);
+      });
 
-      // Add final message
-      const aiMessage: Message = {
-        id: Date.now().toString(),
-        content: response,
-        sender: aiRole,
-        timestamp: new Date(),
-      };
-
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === currentSessionId ? { ...session, messages: [...session.messages, aiMessage] } : session,
-        ),
-      );
-
-      // Switch turns and continue debate
-      const nextTurn = aiRole === 'defender' ? 'critic' : 'defender';
-      setCurrentTurn(nextTurn);
-
-      // Continue debate automatically after a pause (limit to 3 rounds for demo)
-      if (isDebateActive && currentSession.messages.length < 6) {
-        setTimeout(() => generateAIDebateResponse(nextTurn), 2000);
+      // Add the complete message to database
+      if (response.trim()) {
+        await addMessageToDatabase(currentConversation.id, {
+          sender: aiRole,
+          content: response.trim(),
+          isWhisper: false,
+          targetAI: undefined,
+        });
       }
+
+      // Clear streaming state
+      setStreamingFrom(null);
+      setStreamingMessage('');
+
+      // Set next AI role for manual trigger
+      const nextRole = aiRole === 'defender' ? 'critic' : 'defender';
+      setNextAIRole(nextRole);
     } catch (err) {
-      console.error('AI generation error:', err);
-    } finally {
+      console.error('Error generating AI response:', err);
+      setError(`Failed to generate ${aiRole} response`);
       setStreamingFrom(null);
       setStreamingMessage('');
     }
   };
 
-  // Group sessions by time
-  const groupSessionsByTime = () => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-    const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-    const filtered = sessions.filter((session) => session.title.toLowerCase().includes(searchQuery.toLowerCase()));
-
-    return {
-      today: filtered.filter((s) => s.createdAt >= today),
-      yesterday: filtered.filter((s) => s.createdAt >= yesterday && s.createdAt < today),
-      lastWeek: filtered.filter((s) => s.createdAt >= lastWeek && s.createdAt < yesterday),
-      older: filtered.filter((s) => s.createdAt < lastWeek),
-    };
-  };
-
-  // Initialize with first conversation if none exists
-  useEffect(() => {
-    if (sessions.length === 0) {
-      createNewConversation('mixed');
-    }
-  }, [sessions.length]);
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'active':
-        return <Zap size={12} className='text-green-500' />;
-      case 'paused':
-        return <Pause size={12} className='text-yellow-500' />;
-      case 'completed':
-        return <Shield size={12} className='text-blue-500' />;
-      default:
-        return null;
-    }
-  };
-
-  const getMessageBubbleColor = (sender: string) => {
-    switch (sender) {
-      case 'defender':
-        return 'bg-blue-600/20 border-blue-500/30';
-      case 'critic':
-        return 'bg-red-600/20 border-red-500/30';
-      case 'user':
-        return 'bg-purple-600/20 border-purple-500/30';
-      default:
-        return 'bg-gray-600/20 border-gray-500/30';
-    }
-  };
-
-  const groupedSessions = groupSessionsByTime();
-
-  const handleStarterClick = (starter: ConversationStarter) => {
-    if (!currentSessionId) {
-      createNewConversation('mixed');
-    }
+  const handleStarterClick = async (starter: ConversationStarter) => {
+    if (isGenerating) return;
     setInput(starter.text);
+  };
+
+  const handleModelChange = async (role: 'defender' | 'critic', provider: string, model: string) => {
+    if (!currentConversation) return;
+
+    try {
+      const updateData =
+        role === 'defender'
+          ? { defenderProvider: provider, defenderModel: model }
+          : { criticProvider: provider, criticModel: model };
+
+      const updatedConversation = await DatabaseAPI.updateConversation(currentConversation.id, updateData);
+
+      setConversations((prev) =>
+        prev.map((conversation) => (conversation.id === currentConversation.id ? updatedConversation : conversation)),
+      );
+    } catch (err) {
+      console.error('Error updating model configuration:', err);
+      setError('Failed to update model configuration');
+    }
+  };
+
+  const copyShareableUrl = async (conversation: UIConversation) => {
+    try {
+      const slug = createConversationSlug(conversation.title, conversation.id);
+      const url = `${window.location.origin}/c/${slug}`;
+      await navigator.clipboard.writeText(url);
+    } catch (err) {
+      console.error('Failed to copy URL:', err);
+    }
+  };
+
+  const handleDebateFlowChange = () => {
+    setDebateFlow(debateFlow === 'critic-first' ? 'defender-first' : 'critic-first');
+  };
+
+  const handleStop = async () => {
+    if (!currentConversation || !isGenerating) return;
+
+    try {
+      // Stop current generation and preserve the streaming message
+      cleanup();
+
+      // Save the current streaming message to database if it exists
+      if (streamingMessage.trim() && streamingFrom) {
+        await addMessageToDatabase(currentConversation.id, {
+          sender: streamingFrom,
+          content: streamingMessage.trim(),
+          isWhisper: false,
+          targetAI: undefined,
+        });
+      }
+
+      // Clear streaming state
+      setStreamingFrom(null);
+      setStreamingMessage('');
+
+      // Clear timeout for next AI response
+      if (debateTimeoutRef.current) {
+        clearTimeout(debateTimeoutRef.current);
+        debateTimeoutRef.current = null;
+      }
+
+      console.log('🛑 [STOP] AI generation stopped by user');
+    } catch (err) {
+      console.error('Error stopping generation:', err);
+      setError('Failed to stop generation');
+    }
+  };
+
+  const handleTriggerAI = async (role: 'defender' | 'critic') => {
+    if (!currentConversation || isGenerating) return;
+
+    console.log(`🎯 [MANUAL] User triggered ${role} response`);
+    setNextAIRole(null); // Clear the next role since we're about to generate
+    await generateAIDebateResponse(role);
   };
 
   return (
     <SidebarProvider>
       <div className='flex h-screen w-full bg-black'>
-        {/* Sidebar */}
-        <Sidebar className='border-r border-white/10 bg-black/95 backdrop-blur-md [&>*]:bg-transparent'>
-          <SidebarHeader className='border-b border-white/10 p-4 bg-transparent'>
-            <div className='flex items-center gap-3 mb-4'>
-              <div className='w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-red-500 flex items-center justify-center'>
-                <Swords size={16} className='text-white' />
-              </div>
-              <h2 className='font-bold text-white'>AI Arena</h2>
-            </div>
-            <div className='space-y-2 mb-3'>
-              <Button
-                onClick={() => createNewConversation('mixed')}
-                className='w-full bg-gradient-to-r from-blue-600 to-red-600 hover:from-blue-700 hover:to-red-700 text-white border-0'
-              >
-                <Plus size={16} className='mr-2' />
-                New Conversation
-              </Button>
+        <ConversationSidebar
+          conversations={conversations}
+          currentConversationId={currentConversationId}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onCreateNewConversation={createNewConversation}
+          onSelectConversation={selectConversation}
+          onDeleteConversation={deleteConversation}
+        />
 
-              <div className='grid grid-cols-2 gap-2'>
-                <Button
-                  onClick={() => createNewConversation('same')}
-                  variant='outline'
-                  className='text-xs border-white/20 text-white/80 hover:text-white hover:bg-white/10 bg-transparent'
-                >
-                  Same Model
-                </Button>
-                <Button
-                  onClick={() => createNewConversation('collab')}
-                  variant='outline'
-                  className='text-xs border-white/20 text-white/80 hover:text-white hover:bg-white/10 bg-transparent'
-                >
-                  Collaborate
-                </Button>
-              </div>
-            </div>
-            <div className='relative'>
-              <Search size={16} className='absolute left-3 top-1/2 transform -translate-y-1/2 text-white/50' />
-              <Input
-                placeholder='Search conversations...'
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className='pl-10 bg-white/10 border-white/20 text-white placeholder-white/50 focus:border-blue-500'
-              />
-            </div>
-          </SidebarHeader>
-
-          <SidebarContent className='bg-transparent [&>*]:bg-transparent'>
-            {Object.entries(groupedSessions).map(([period, periodSessions]) => {
-              if (periodSessions.length === 0) return null;
-
-              const periodLabels = {
-                today: 'Today',
-                yesterday: 'Yesterday',
-                lastWeek: 'Last 7 Days',
-                older: 'Older',
-              };
-
-              return (
-                <SidebarGroup key={period}>
-                  <SidebarGroupLabel className='text-white/70 px-2'>
-                    {periodLabels[period as keyof typeof periodLabels]}
-                  </SidebarGroupLabel>
-                  <SidebarGroupContent>
-                    <SidebarMenu>
-                      {periodSessions.map((session) => (
-                        <SidebarMenuItem key={session.id}>
-                          <div className='group relative flex items-center w-full'>
-                            <SidebarMenuButton
-                              onClick={() => selectSession(session.id)}
-                              isActive={currentSessionId === session.id}
-                              className='flex-1 text-white/80 hover:text-white hover:bg-white/10 data-[active=true]:bg-blue-600/20 data-[active=true]:text-white pr-8'
-                            >
-                              <div className='flex items-center gap-2'>
-                                <MessageSquare size={16} />
-                                {getStatusIcon(session.status)}
-                              </div>
-                              <span className='truncate'>{session.title}</span>
-                            </SidebarMenuButton>
-                            <button
-                              onClick={(e) => deleteSession(session.id, e)}
-                              className='absolute right-1 opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded z-10'
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </SidebarMenuItem>
-                      ))}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </SidebarGroup>
-              );
-            })}
-          </SidebarContent>
-
-          <SidebarFooter className='border-t border-white/10 p-4 bg-transparent'>
-            <div className='flex items-center gap-3'>
-              <div className='w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center'>
-                <User size={16} className='text-white' />
-              </div>
-              <div className='flex-1'>
-                <p className='text-white text-sm font-medium'>Moderator</p>
-                <p className='text-white/60 text-xs'>Conversation Guide</p>
-              </div>
-            </div>
-          </SidebarFooter>
-        </Sidebar>
-
-        {/* Main Chat Area */}
         <SidebarInset className='flex-1 flex flex-col h-screen'>
-          <div className={`flex-1 bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 relative flex flex-col`}>
-            <div className='flex-1 bg-black/80 backdrop-blur-md flex flex-col'>
-              {/* Header */}
-              <div className='border-b border-white/10 p-4 flex items-center justify-between flex-shrink-0'>
-                <div className='flex items-center gap-3'>
-                  <SidebarTrigger className='text-white hover:bg-white/10' />
-                  {currentSession && (
-                    <div className='flex items-center gap-4'>
-                      <div className='flex items-center gap-2'>
-                        <Shield size={20} className='text-blue-400' />
-                        <span className='text-sm text-blue-600'>
-                          {currentSession.participantA.name} ({currentSession.participantA.role})
-                        </span>
-                      </div>
-                      <div className='text-white/40'>vs</div>
-                      <div className='flex items-center gap-2'>
-                        <Swords size={20} className='text-red-400' />
-                        <span className='text-sm text-red-600'>
-                          {currentSession.participantB.name} ({currentSession.participantB.role})
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+          <div className='flex-1 bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 relative flex flex-col'>
+            <div className='flex-1 bg-black/60 flex flex-col min-h-screen relative'>
+              <ConversationHeader
+                currentConversation={currentConversation}
+                isGenerating={isGenerating}
+                onModelChange={handleModelChange}
+                onShare={() => currentConversation && copyShareableUrl(currentConversation)}
+              />
 
-              {/* Chat Messages */}
-              <div className='flex-1 flex flex-col min-h-0'>
-                {!currentSession || currentSession.messages.length === 0 ? (
-                  <div className='flex-1 overflow-y-auto p-4 flex items-center justify-center'>
-                    <div className='max-w-4xl mx-auto w-full'>
-                      <motion.div
-                        className='flex flex-col items-center text-center mb-8'
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                      >
-                        <div className='w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-red-500 flex items-center justify-center mb-6'>
-                          <Swords size={24} className='text-white' />
-                        </div>
-                        <h2 className='text-2xl font-bold text-white mb-2'>Start a New Conversation</h2>
-                        <p className='text-white/60 mb-8 max-w-md'>
-                          Present your topic and watch two AI models discuss it. Using local Ollama models for free,
-                          private conversations. Choose different roles like Supporter vs Critic, Collaborators, or even
-                          the same model with different perspectives.
-                        </p>
-                      </motion.div>
-
-                      {/* Conversation Starters */}
-                      <div className='space-y-6'>
-                        <h3 className='text-lg font-semibold text-white text-center'>Pick a conversation starter</h3>
-
-                        {/* Category Tabs */}
-                        <div className='flex flex-wrap justify-center gap-2 mb-6'>
-                          {conversationStarters.map((category) => (
-                            <button
-                              key={category.id}
-                              onClick={() => setSelectedCategory(category.id)}
-                              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
-                                selectedCategory === category.id
-                                  ? 'bg-blue-600 text-white'
-                                  : 'bg-white/10 text-white/70 hover:bg-white/20 hover:text-white'
-                              }`}
-                            >
-                              {category.icon} {category.label}
-                            </button>
-                          ))}
-                        </div>
-
-                        {/* Starters Grid */}
-                        <div className='grid grid-cols-1 md:grid-cols-2 gap-3'>
-                          {conversationStarters
-                            .find((cat) => cat.id === selectedCategory)
-                            ?.starters.map((starter, index) => (
-                              <motion.button
-                                key={starter.id}
-                                onClick={() => handleStarterClick(starter)}
-                                className='p-4 rounded-lg bg-white/5 border border-white/10 text-left hover:bg-white/10 hover:border-white/20 transition-all duration-200 group'
-                                initial={{ opacity: 0, y: 20 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ delay: index * 0.1 }}
-                                whileHover={{ scale: 1.02 }}
-                                whileTap={{ scale: 0.98 }}
-                              >
-                                <p className='text-white/90 text-sm leading-relaxed group-hover:text-white transition-colors'>
-                                  {starter.text}
-                                </p>
-                              </motion.button>
-                            ))}
-                        </div>
-
-                        {/* Random Suggestions */}
-                        <div className='border-t border-white/10 pt-6 mt-8'>
-                          <h4 className='text-md font-medium text-white/70 text-center mb-4'>
-                            Or try these random topics
-                          </h4>
-                          <div className='grid grid-cols-1 gap-2'>
-                            {getRandomStarters(3).map((starter) => (
-                              <button
-                                key={starter.id}
-                                onClick={() => handleStarterClick(starter)}
-                                className='p-3 rounded-lg bg-white/5 border border-white/10 text-left hover:bg-white/10 hover:border-white/20 transition-all duration-200 text-sm'
-                              >
-                                <span className='text-white/80'>{starter.text}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+              <div className='flex-1 flex flex-col min-h-0 pb-32'>
+                {!currentConversation || currentConversation.messages.length === 0 ? (
+                  <ConversationStarters
+                    selectedCategory={selectedCategory}
+                    onCategorySelect={setSelectedCategory}
+                    onStarterClick={handleStarterClick}
+                  />
                 ) : (
-                  <div className='flex-1 overflow-y-auto p-4'>
-                    <div className='max-w-4xl mx-auto space-y-4'>
-                      {currentSession.messages.map((message) => (
-                        <motion.div
-                          key={message.id}
-                          className={`border rounded-lg p-4 max-w-[80%] ${
-                            message.sender === 'user' ? 'ml-auto' : 'mr-auto'
-                          } ${getMessageBubbleColor(message.sender)}`}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                        >
-                          <div className='flex items-center gap-2 mb-2'>
-                            <span className='text-sm font-medium text-white'>
-                              {message.sender === 'defender' && 'River (Defender)'}
-                              {message.sender === 'critic' && 'Sage (Critic)'}
-                              {message.sender === 'user' && 'Moderator'}
-                            </span>
-                            {message.isWhisper && (
-                              <span className='text-xs bg-purple-500/20 text-purple-300 px-2 py-1 rounded'>
-                                Whisper to {message.targetAI}
-                              </span>
-                            )}
-                          </div>
-                          <p className='text-white/90 text-sm leading-relaxed'>{message.content}</p>
-                        </motion.div>
-                      ))}
-
-                      {/* Streaming message */}
-                      {streamingFrom && streamingMessage && (
-                        <motion.div
-                          className={`border rounded-lg p-4 max-w-[80%] mr-auto ${getMessageBubbleColor(
-                            streamingFrom,
-                          )}`}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                        >
-                          <div className='flex items-center gap-2 mb-2'>
-                            <span className='text-sm font-medium text-white'>
-                              {streamingFrom === 'defender' && 'River (Defender)'}
-                              {streamingFrom === 'critic' && 'Sage (Critic)'}
-                            </span>
-                            <div className='flex space-x-1'>
-                              <div className='w-1 h-1 bg-white/60 rounded-full animate-pulse'></div>
-                              <div
-                                className='w-1 h-1 bg-white/60 rounded-full animate-pulse'
-                                style={{ animationDelay: '0.2s' }}
-                              ></div>
-                              <div
-                                className='w-1 h-1 bg-white/60 rounded-full animate-pulse'
-                                style={{ animationDelay: '0.4s' }}
-                              ></div>
-                            </div>
-                          </div>
-                          <p className='text-white/90 text-sm leading-relaxed'>
-                            {streamingMessage}
-                            <span className='animate-pulse'>|</span>
-                          </p>
-                        </motion.div>
-                      )}
-
-                      <div ref={messagesEndRef} />
-                    </div>
-                  </div>
+                  <MessagesList
+                    messages={currentConversation.messages}
+                    streamingFrom={streamingFrom}
+                    streamingMessage={streamingMessage}
+                    isGenerating={isGenerating}
+                  />
                 )}
+
+                <div ref={messagesEndRef} />
               </div>
 
-              {/* Input Area */}
-              <div className='border-t border-white/10 p-4 flex-shrink-0'>
-                <div className='max-w-4xl mx-auto'>
-                  {/* Error Display */}
-                  {error && (
-                    <div className='mb-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg'>
-                      <p className='text-red-300 text-sm'>{error}</p>
-                      <Button
-                        onClick={() => clearError()}
-                        variant='ghost'
-                        size='sm'
-                        className='mt-2 text-red-300 hover:text-red-200'
-                      >
-                        Dismiss
-                      </Button>
-                    </div>
-                  )}
+              {currentConversation && (
+                <DebateFlowIndicator
+                  debateFlow={debateFlow}
+                  streamingFrom={streamingFrom}
+                  isGenerating={isGenerating}
+                  nextAIRole={nextAIRole}
+                  onFlowChange={handleDebateFlowChange}
+                  onStop={handleStop}
+                  onTriggerAI={handleTriggerAI}
+                />
+              )}
 
-                  {/* Debate Controls */}
-                  {currentSession && currentSession.messages.length > 0 && (
-                    <div className='flex items-center justify-center mb-4 gap-4'>
-                      <Button
-                        onClick={toggleDebate}
-                        variant='outline'
-                        className='border-white/20 text-white hover:bg-white/10 bg-transparent hover:border-white/40'
-                        disabled={isGenerating}
-                      >
-                        {isDebateActive ? (
-                          <>
-                            <Pause size={16} className='mr-2' />
-                            Pause Conversation
-                          </>
-                        ) : (
-                          <>
-                            <Play size={16} className='mr-2' />
-                            Resume Conversation
-                          </>
-                        )}
-                      </Button>
-
-                      {isGenerating && (
-                        <div className='flex items-center gap-2 text-white/60 text-sm'>
-                          <div className='w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin'></div>
-                          {streamingFrom && `${streamingFrom === 'defender' ? 'River' : 'Sage'} is typing...`}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Input Form */}
-                  <form onSubmit={handleSubmit} className='relative'>
-                    <div className='relative rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 p-4'>
-                      <textarea
-                        className='w-full bg-transparent text-white placeholder-white/50 resize-none focus:outline-none min-h-[60px]'
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        placeholder={
-                          !currentSession || currentSession.messages.length === 0
-                            ? 'Present your topic or idea to discuss...'
-                            : 'Add context, ask questions, or whisper to an AI (@River or @Sage)...'
-                        }
-                        rows={1}
-                        style={{
-                          height: Math.min(120, Math.max(60, input.split('\n').length * 24)) + 'px',
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            if (input.trim()) {
-                              handleSubmit(e as React.FormEvent);
-                            }
-                          }
-                        }}
-                      />
-                    </div>
-
-                    <div className='flex items-center justify-between mt-3'>
-                      <div className='text-xs text-white/40'>
-                        Tip: Use @River or @Sage to whisper privately to an AI
-                      </div>
-                      <Button
-                        type='submit'
-                        className='bg-gradient-to-r from-blue-600 to-red-600 rounded-full text-white disabled:opacity-50'
-                        disabled={!input.trim()}
-                      >
-                        <Send size={18} />
-                      </Button>
-                    </div>
-                  </form>
-                </div>
-              </div>
+              <MessageInput
+                input={input}
+                isGenerating={isGenerating}
+                currentConversation={currentConversation}
+                debateFlow={debateFlow}
+                onInputChange={setInput}
+                onSubmit={handleSubmit}
+              />
             </div>
           </div>
         </SidebarInset>
       </div>
     </SidebarProvider>
+  );
+}
+
+export default function AIBattle() {
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+
+  const handleConversationChange = (conversationId: string | null) => {
+    if (conversationId && conversationId !== currentConversationId) {
+      setCurrentConversationId(conversationId);
+    }
+  };
+
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <SearchParamsHandler onConversationChange={handleConversationChange} />
+      <AIBattleContent
+        currentConversationId={currentConversationId}
+        setCurrentConversationId={setCurrentConversationId}
+      />
+    </Suspense>
   );
 }

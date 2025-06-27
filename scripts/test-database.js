@@ -5,7 +5,7 @@
  * Tests: CRUD operations, message handling, search functionality
  */
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = 'http://localhost:3001';
 
 async function testCreateConversation() {
   console.log('Testing conversation creation...');
